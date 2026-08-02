@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Frost Runner - Princess Aria
+Frost Runner - Princess Adventure (v2)
 A gentle running & jumping game for young children (age ~6).
 Original artwork drawn in code. No copyrighted assets.
-Controls: SPACE / UP / MOUSE CLICK = Jump | ESC = Pause | ENTER = Start/Retry
+
+Kids:    SPACE / UP / MOUSE CLICK = Jump | ESC = Pause | ENTER = Start
+Parents: hold P for 3 seconds on the title screen to open Parent Settings
 """
-import sys, random, math
+import sys, os, json, random, math
 
 try:
     import pygame
@@ -24,14 +26,46 @@ except Exception:
 W, H = 900, 500
 GROUND = H - 90
 screen = pygame.display.set_mode((W, H))
-pygame.display.set_caption("Frost Runner - Princess Aria")
+pygame.display.set_caption("Frost Runner - Princess Adventure")
 clock = pygame.time.Clock()
+
+CFG_PATH = os.path.join(os.path.expanduser("~"), "frost_runner_settings.json")
+DEFAULTS = {"dress": 0, "limit_min": 0, "muted": False, "best": 0}
+
+def load_cfg():
+    out = dict(DEFAULTS)
+    try:
+        with open(CFG_PATH) as f:
+            d = json.load(f)
+        for k in DEFAULTS:
+            if k in d and isinstance(d[k], type(DEFAULTS[k])):
+                out[k] = d[k]
+    except Exception:
+        pass
+    return out
+
+cfg = load_cfg()
+
+def save_cfg():
+    try:
+        with open(CFG_PATH, "w") as f:
+            json.dump(cfg, f)
+    except Exception:
+        pass
 
 SKY_TOP = (150, 205, 255); SKY_BOT = (224, 244, 255)
 SNOW = (245, 250, 255); ICE = (170, 220, 255); DARKICE = (120, 180, 235)
-DRESS = (110, 180, 240); DRESS2 = (150, 210, 255)
-SKIN = (255, 224, 200); HAIR = (238, 232, 170)
+SKIN = (255, 224, 200)
 GOLD = (255, 210, 70); WHITE = (255, 255, 255); TEXTCOL = (40, 70, 120)
+PINK = (255, 120, 170)
+
+PRINCESS = [
+    {"name": "Aria",  "d1": (110, 180, 240), "d2": (150, 210, 255), "hair": (238, 232, 170)},
+    {"name": "Rosa",  "d1": (245, 140, 180), "d2": (255, 185, 210), "hair": (120, 72, 48)},
+    {"name": "Luna",  "d1": (170, 130, 235), "d2": (205, 175, 250), "hair": (45, 45, 70)},
+    {"name": "Mira",  "d1": (110, 205, 175), "d2": (160, 235, 210), "hair": (225, 140, 70)},
+]
+LIMITS = [0, 10, 15, 20, 30]
 
 def pick_font(size, bold=True):
     for name in ("comicsansms", "segoeui", "arial"):
@@ -43,7 +77,7 @@ def pick_font(size, bold=True):
             continue
     return pygame.font.Font(None, size)
 
-font_big = pick_font(58); font_mid = pick_font(34); font_sm = pick_font(24)
+font_big = pick_font(56); font_mid = pick_font(32); font_sm = pick_font(22)
 
 def make_tone(freq, ms, vol=0.3):
     if not HAS_SOUND:
@@ -67,9 +101,10 @@ snd_star = make_tone(880, 180, 0.30)
 snd_gold = make_tone(1200, 300, 0.35)
 snd_oops = make_tone(200, 300, 0.30)
 snd_win = make_tone(1000, 450, 0.35)
+snd_click = make_tone(660, 90, 0.25)
 
 def play(s):
-    if s:
+    if s and not cfg["muted"]:
         try:
             s.play()
         except Exception:
@@ -109,6 +144,24 @@ def draw_background(scroll):
             f[0] = random.randint(0, W)
         pygame.draw.circle(screen, WHITE, (int(f[0]), int(f[1])), int(f[2]))
 
+def draw_princess(x, y, skin_idx, leg=0.0, scale=1.0):
+    p = PRINCESS[skin_idx]
+    d1, d2, hair = p["d1"], p["d2"], p["hair"]
+    def P(dx, dy):
+        return (x + dx * scale, y + dy * scale)
+    pygame.draw.polygon(screen, d1, [P(-22, 0), P(22, 0), P(12, -40), P(-12, -40)])
+    pygame.draw.polygon(screen, d2, [P(-10, -2), P(10, -2), P(6, -38), P(-6, -38)])
+    pygame.draw.line(screen, SKIN, P(-6, 0), P(-6 - leg, 0), max(3, int(6 * scale)))
+    pygame.draw.rect(screen, d1, (x - 10 * scale, y - 58 * scale, 20 * scale, 20 * scale), border_radius=6)
+    pygame.draw.line(screen, SKIN, P(-8, -52), P(-16, -40 + leg), max(3, int(5 * scale)))
+    pygame.draw.line(screen, SKIN, P(8, -52), P(16, -40 - leg), max(3, int(5 * scale)))
+    pygame.draw.circle(screen, SKIN, (int(x), int(y - 66 * scale)), int(13 * scale))
+    pygame.draw.line(screen, hair, P(8, -70), P(22, -40), max(4, int(7 * scale)))
+    pygame.draw.circle(screen, hair, (int(x), int(y - 74 * scale)), int(9 * scale))
+    pygame.draw.polygon(screen, GOLD, [P(-9, -77), P(-4, -85), P(0, -78), P(4, -85), P(9, -77)])
+    pygame.draw.circle(screen, TEXTCOL, (int(x - 4 * scale), int(y - 66 * scale)), max(1, int(2 * scale)))
+    pygame.draw.circle(screen, TEXTCOL, (int(x + 4 * scale), int(y - 66 * scale)), max(1, int(2 * scale)))
+
 class Player:
     def __init__(self):
         self.x = 140; self.y = GROUND; self.vy = 0; self.on_ground = True; self.run = 0
@@ -130,20 +183,8 @@ class Player:
         return pygame.Rect(self.x - 18, self.y - 70, 38, 70)
 
     def draw(self):
-        x, y = self.x, self.y
         leg = math.sin(self.run * math.pi) * (6 if self.on_ground else 0)
-        pygame.draw.polygon(screen, DRESS, [(x - 22, y), (x + 22, y), (x + 12, y - 40), (x - 12, y - 40)])
-        pygame.draw.polygon(screen, DRESS2, [(x - 10, y - 2), (x + 10, y - 2), (x + 6, y - 38), (x - 6, y - 38)])
-        pygame.draw.line(screen, SKIN, (x - 6, y), (x - 6 - leg, y), 6)
-        pygame.draw.rect(screen, DRESS, (x - 10, y - 58, 20, 20), border_radius=6)
-        pygame.draw.line(screen, SKIN, (x - 8, y - 52), (x - 16, y - 40 + leg), 5)
-        pygame.draw.line(screen, SKIN, (x + 8, y - 52), (x + 16, y - 40 - leg), 5)
-        pygame.draw.circle(screen, SKIN, (x, y - 66), 13)
-        pygame.draw.line(screen, HAIR, (x + 8, y - 70), (x + 22, y - 40), 7)
-        pygame.draw.circle(screen, HAIR, (x, y - 74), 9)
-        pygame.draw.polygon(screen, GOLD, [(x - 9, y - 77), (x - 4, y - 85), (x, y - 78), (x + 4, y - 85), (x + 9, y - 77)])
-        pygame.draw.circle(screen, TEXTCOL, (x - 4, y - 66), 2)
-        pygame.draw.circle(screen, TEXTCOL, (x + 4, y - 66), 2)
+        draw_princess(self.x, self.y, cfg["dress"], leg)
 
 class Star:
     def __init__(self, x, gold=False):
@@ -207,7 +248,7 @@ def draw_particles():
         if p[5] <= 0:
             particles.remove(p)
 
-STATE_MENU, STATE_PLAY, STATE_OVER, STATE_PAUSE = 0, 1, 2, 3
+MENU, PICK, PLAY, PAUSE, OVER, PARENT, TIMEUP = range(7)
 
 def new_game():
     return {"player": Player(), "stars": [], "obs": [], "score": 0, "hearts": 3,
@@ -227,38 +268,105 @@ def text_center(txt, fnt, y, col=TEXTCOL):
     s = fnt.render(txt, True, col)
     screen.blit(s, (W // 2 - s.get_width() // 2, y))
 
-best = 0
-state = STATE_MENU
+def overlay(a=140):
+    ov = pygame.Surface((W, H), pygame.SRCALPHA)
+    ov.fill((255, 255, 255, a))
+    screen.blit(ov, (0, 0))
+
+def draw_mute_icon():
+    x, y = 24, H - 34
+    c = (150, 170, 200) if cfg["muted"] else (70, 130, 200)
+    pygame.draw.polygon(screen, c, [(x, y - 6), (x + 7, y - 6), (x + 14, y - 14), (x + 14, y + 10), (x + 7, y + 2), (x, y + 2)])
+    if cfg["muted"]:
+        pygame.draw.line(screen, (220, 80, 90), (x + 18, y - 10), (x + 32, y + 6), 3)
+        pygame.draw.line(screen, (220, 80, 90), (x + 32, y - 10), (x + 18, y + 6), 3)
+    else:
+        pygame.draw.arc(screen, c, (x + 14, y - 12, 18, 20), -1.0, 1.0, 3)
+    screen.blit(font_sm.render("M", True, c), (x + 40, y - 12))
+
+state = MENU
 g = new_game()
+hold_t = 0.0
+play_seconds = 0.0
 running = True
 
 while running:
+    dt = clock.tick(60) / 1000.0
+    keys = pygame.key.get_pressed()
+
+    if state in (MENU, TIMEUP) and keys[pygame.K_p]:
+        hold_t += dt
+        if hold_t >= 3.0:
+            hold_t = 0.0
+            if state == TIMEUP:
+                play_seconds = 0.0
+                state = MENU
+            else:
+                state = PARENT
+            play(snd_click)
+    else:
+        hold_t = 0.0
+
     for e in pygame.event.get():
         if e.type == pygame.QUIT:
             running = False
         elif e.type == pygame.KEYDOWN:
-            if e.key == pygame.K_ESCAPE:
-                if state == STATE_PLAY:
-                    state = STATE_PAUSE
-                elif state == STATE_PAUSE:
-                    state = STATE_PLAY
-            elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                if state in (STATE_MENU, STATE_OVER):
-                    g = new_game(); state = STATE_PLAY
-            elif e.key in (pygame.K_SPACE, pygame.K_UP):
-                if state == STATE_PLAY:
-                    g["player"].jump()
-                elif state in (STATE_MENU, STATE_OVER):
-                    g = new_game(); state = STATE_PLAY
+            if e.key == pygame.K_m:
+                cfg["muted"] = not cfg["muted"]
+                save_cfg()
+                play(snd_click)
             elif e.key == pygame.K_F11:
                 pygame.display.toggle_fullscreen()
+            elif state == PARENT:
+                if e.key == pygame.K_LEFT:
+                    cfg["limit_min"] = LIMITS[(LIMITS.index(cfg["limit_min"]) - 1) % len(LIMITS)] if cfg["limit_min"] in LIMITS else 0
+                    save_cfg(); play(snd_click)
+                elif e.key == pygame.K_RIGHT:
+                    cfg["limit_min"] = LIMITS[(LIMITS.index(cfg["limit_min"]) + 1) % len(LIMITS)] if cfg["limit_min"] in LIMITS else 10
+                    save_cfg(); play(snd_click)
+                elif e.key == pygame.K_r:
+                    play_seconds = 0.0; play(snd_click)
+                elif e.key in (pygame.K_ESCAPE, pygame.K_RETURN):
+                    state = MENU; play(snd_click)
+            elif state == MENU:
+                if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    state = PICK; play(snd_click)
+            elif state == PICK:
+                if e.key == pygame.K_LEFT:
+                    cfg["dress"] = (cfg["dress"] - 1) % len(PRINCESS); save_cfg(); play(snd_click)
+                elif e.key == pygame.K_RIGHT:
+                    cfg["dress"] = (cfg["dress"] + 1) % len(PRINCESS); save_cfg(); play(snd_click)
+                elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    g = new_game(); state = PLAY; play(snd_click)
+                elif e.key == pygame.K_ESCAPE:
+                    state = MENU
+            elif state == PLAY:
+                if e.key == pygame.K_ESCAPE:
+                    state = PAUSE
+                elif e.key in (pygame.K_SPACE, pygame.K_UP):
+                    g["player"].jump()
+            elif state == PAUSE:
+                if e.key == pygame.K_ESCAPE:
+                    state = PLAY
+            elif state == OVER:
+                if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    g = new_game(); state = PLAY
+                elif e.key == pygame.K_ESCAPE:
+                    state = PICK
         elif e.type == pygame.MOUSEBUTTONDOWN:
-            if state == STATE_PLAY:
+            if state == PLAY:
                 g["player"].jump()
-            elif state in (STATE_MENU, STATE_OVER):
-                g = new_game(); state = STATE_PLAY
+            elif state == PICK:
+                g = new_game(); state = PLAY; play(snd_click)
+            elif state in (MENU, OVER):
+                state = PICK; play(snd_click)
 
-    if state == STATE_PLAY:
+    if state == PLAY:
+        play_seconds += dt
+        if cfg["limit_min"] > 0 and play_seconds >= cfg["limit_min"] * 60:
+            state = TIMEUP
+            play(snd_win)
+
         g["scroll"] += g["speed"]
         g["speed"] = min(9.0, g["speed"] + 0.0008)
         g["player"].update()
@@ -280,8 +388,10 @@ while running:
                 play(snd_oops)
                 burst(g["player"].x, g["player"].y - 40, (255, 150, 150))
                 if g["hearts"] <= 0:
-                    state = STATE_OVER
-                    best = max(best, g["score"])
+                    state = OVER
+                    if g["score"] > cfg["best"]:
+                        cfg["best"] = g["score"]
+                        save_cfg()
         for s in g["stars"][:]:
             s.update(g["speed"])
             if s.x < -30:
@@ -306,31 +416,84 @@ while running:
         s.draw()
     for o in g["obs"]:
         o.draw()
-    g["player"].draw()
+    if state in (PLAY, PAUSE, OVER, TIMEUP):
+        g["player"].draw()
     draw_particles()
-    screen.blit(font_mid.render("Score: %d" % g["score"], True, TEXTCOL), (20, 18))
-    draw_hearts(g["hearts"])
-    if g["praise_t"] > 0:
-        text_center(g["praise"], font_mid, H // 2 - 150, (255, 120, 170))
 
-    if state == STATE_MENU:
-        ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((255, 255, 255, 120)); screen.blit(ov, (0, 0))
-        text_center("Frost Runner", font_big, 110, (70, 120, 200))
-        text_center("Princess Aria", font_mid, 190, (140, 90, 180))
-        text_center("Press ENTER or CLICK to Play", font_mid, 290)
-        text_center("SPACE / UP / CLICK = Jump    ESC = Pause", font_sm, 350)
-    elif state == STATE_PAUSE:
-        ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((255, 255, 255, 150)); screen.blit(ov, (0, 0))
-        text_center("Paused", font_big, 150)
-        text_center("Press ESC to keep playing", font_sm, 250)
-    elif state == STATE_OVER:
-        ov = pygame.Surface((W, H), pygame.SRCALPHA); ov.fill((255, 255, 255, 150)); screen.blit(ov, (0, 0))
-        text_center("Great Playing!", font_big, 110, (255, 120, 170))
-        text_center("You scored %d" % g["score"], font_mid, 205)
-        text_center("Best today: %d" % best, font_sm, 255, (120, 150, 190))
-        text_center("Press ENTER to play again", font_sm, 310)
+    if state in (PLAY, PAUSE, OVER):
+        screen.blit(font_mid.render("Score: %d" % g["score"], True, TEXTCOL), (20, 18))
+        draw_hearts(g["hearts"])
+    if g["praise_t"] > 0 and state == PLAY:
+        text_center(g["praise"], font_mid, H // 2 - 150, PINK)
+
+    if state == MENU:
+        overlay(120)
+        text_center("Frost Runner", font_big, 90, (70, 120, 200))
+        text_center("Princess Adventure", font_mid, 165, (140, 90, 180))
+        text_center("Press ENTER or CLICK to Play", font_mid, 265)
+        text_center("Best score: %d" % cfg["best"], font_sm, 320, (120, 150, 190))
+        text_center("Parents: hold P for 3 seconds for settings", font_sm, 400, (140, 160, 190))
+        if hold_t > 0:
+            pygame.draw.rect(screen, (200, 215, 235), (W // 2 - 100, 430, 200, 10), border_radius=5)
+            pygame.draw.rect(screen, (70, 130, 200), (W // 2 - 100, 430, int(200 * hold_t / 3.0), 10), border_radius=5)
+        draw_mute_icon()
+
+    elif state == PICK:
+        overlay(140)
+        text_center("Choose your princess", font_mid, 45, (140, 90, 180))
+        for i, p in enumerate(PRINCESS):
+            cx = 140 + i * 210
+            sel = (i == cfg["dress"])
+            if sel:
+                pygame.draw.rect(screen, (255, 245, 200), (cx - 85, 95, 170, 260), border_radius=18)
+                pygame.draw.rect(screen, GOLD, (cx - 85, 95, 170, 260), 4, border_radius=18)
+            else:
+                pygame.draw.rect(screen, (255, 255, 255, 200), (cx - 80, 100, 160, 250), border_radius=16)
+            draw_princess(cx, 300, i, 0, 1.15)
+            nm = font_mid.render(p["name"], True, TEXTCOL if sel else (140, 160, 190))
+            screen.blit(nm, (cx - nm.get_width() // 2, 310))
+        text_center("LEFT / RIGHT to choose    ENTER to play", font_sm, 400)
+        text_center("ESC to go back", font_sm, 432, (140, 160, 190))
+        draw_mute_icon()
+
+    elif state == PAUSE:
+        overlay(150)
+        text_center("Paused", font_big, 140)
+        text_center("Press ESC to keep playing", font_sm, 240)
+        draw_mute_icon()
+
+    elif state == OVER:
+        overlay(150)
+        text_center("Great Playing!", font_big, 100, PINK)
+        text_center("You scored %d" % g["score"], font_mid, 190)
+        text_center("Best ever: %d" % cfg["best"], font_sm, 240, (120, 150, 190))
+        text_center("Press ENTER to play again", font_sm, 300)
+        text_center("ESC to change princess", font_sm, 335, (140, 160, 190))
+        draw_mute_icon()
+
+    elif state == PARENT:
+        overlay(200)
+        text_center("Parent Settings", font_big, 60, (70, 120, 200))
+        lim = "No limit" if cfg["limit_min"] == 0 else "%d minutes" % cfg["limit_min"]
+        text_center("Play time limit:  < %s >" % lim, font_mid, 165)
+        text_center("LEFT / RIGHT to change", font_sm, 210, (140, 160, 190))
+        text_center("Sound:  %s   (press M)" % ("MUTED" if cfg["muted"] else "ON"), font_mid, 265)
+        used = int(play_seconds // 60)
+        text_center("Played this session: %d min   (press R to reset)" % used, font_sm, 320, (140, 160, 190))
+        text_center("Press ESC to go back", font_sm, 400)
+        text_center("Settings are saved automatically", font_sm, 435, (170, 185, 205))
+
+    elif state == TIMEUP:
+        overlay(200)
+        text_center("Time for a break!", font_big, 110, PINK)
+        text_center("Great playing today.", font_mid, 200)
+        text_center("Ask a grown-up if you want more time.", font_sm, 255, (120, 150, 190))
+        text_center("Parents: hold P for 3 seconds to allow more", font_sm, 340, (140, 160, 190))
+        if hold_t > 0:
+            pygame.draw.rect(screen, (200, 215, 235), (W // 2 - 100, 380, 200, 10), border_radius=5)
+            pygame.draw.rect(screen, (70, 130, 200), (W // 2 - 100, 380, int(200 * hold_t / 3.0), 10), border_radius=5)
 
     pygame.display.flip()
-    clock.tick(60)
 
+save_cfg()
 pygame.quit()
