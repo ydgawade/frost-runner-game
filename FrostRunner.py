@@ -1,282 +1,87 @@
 #!/usr/bin/env python3
 """
-Frost Runner - Princess Adventure (v2)
-A gentle running & jumping game for young children (age ~6).
-Original artwork drawn in code. No copyrighted assets.
+Frost Runner Adventure (v3) - main game loop.
 
-Kids:    SPACE / UP / MOUSE CLICK = Jump | ESC = Pause | ENTER = Start
-Parents: hold P for 3 seconds on the title screen to open Parent Settings
+Kids:    LEFT / RIGHT = move    SPACE / UP / CLICK = jump    ESC = pause
+Parents: hold P for 3 seconds on the title screen for Parent Settings
 """
-import sys, os, json, random, math
+import math, random
+import pygame
+from frost_core import (
+    W, H, GROUND, screen, clock, cfg, save_cfg, clamp, play, overlay, text_center,
+    WHITE, SNOW, ICE, SKIN, GOLD, TEXTCOL, PINK,
+    PRINCESS, STAGES, LIMITS, font_big, font_mid, font_sm,
+    draw_background, draw_princess, draw_particles, draw_chest,
+    burst, sparkle_ring, float_text, hit,
+    snd_star, snd_gem, snd_crown, snd_oops, snd_poof, snd_power, snd_win, snd_click,
+)
+from frost_entities import Player, Arrow, Monster, Pickup
 
-try:
-    import pygame
-except ImportError:
-    print("Pygame is not installed. Run:  python -m pip install pygame")
-    sys.exit(1)
+MENU, PICK, PLAY, PAUSE, OVER, PARENT, TIMEUP, LEVELDONE, WINGAME = range(9)
 
-pygame.init()
-try:
-    pygame.mixer.pre_init(22050, -16, 2, 512)
-    pygame.mixer.init()
-    HAS_SOUND = True
-except Exception:
-    HAS_SOUND = False
 
-W, H = 900, 500
-GROUND = H - 90
-screen = pygame.display.set_mode((W, H))
-pygame.display.set_caption("Frost Runner - Princess Adventure")
-clock = pygame.time.Clock()
+def new_run(stage, score=0, hearts=3, crowns=0):
+    return {"player": Player(), "stage": stage, "score": score, "hearts": hearts,
+            "crowns": crowns, "dist": 0.0, "scroll": 0.0, "spawn": 30, "arrows": [],
+            "mons": [], "picks": [], "combo": 0, "combo_t": 0, "mult": 1,
+            "shield": False, "slow_t": 0, "magnet_t": 0, "checkpoint": False,
+            "praise": "", "praise_t": 0, "banner": "", "banner_t": 0, "cheer": 0}
 
-CFG_PATH = os.path.join(os.path.expanduser("~"), "frost_runner_settings.json")
-DEFAULTS = {"dress": 0, "limit_min": 0, "muted": False, "best": 0}
 
-def load_cfg():
-    out = dict(DEFAULTS)
-    try:
-        with open(CFG_PATH) as f:
-            d = json.load(f)
-        for k in DEFAULTS:
-            if k in d and isinstance(d[k], type(DEFAULTS[k])):
-                out[k] = d[k]
-    except Exception:
-        pass
-    return out
+praises = ["Great jump!", "Amazing!", "Wow!", "Super!", "You did it!", "Yay!", "Nice one!"]
 
-cfg = load_cfg()
 
-def save_cfg():
-    try:
-        with open(CFG_PATH, "w") as f:
-            json.dump(cfg, f)
-    except Exception:
-        pass
+def stage_speed(st):
+    return STAGES[st]["speed"] * (0.82 if cfg["easy"] else 1.0)
 
-SKY_TOP = (150, 205, 255); SKY_BOT = (224, 244, 255)
-SNOW = (245, 250, 255); ICE = (170, 220, 255); DARKICE = (120, 180, 235)
-SKIN = (255, 224, 200)
-GOLD = (255, 210, 70); WHITE = (255, 255, 255); TEXTCOL = (40, 70, 120)
-PINK = (255, 120, 170)
-
-PRINCESS = [
-    {"name": "Aria",  "d1": (110, 180, 240), "d2": (150, 210, 255), "hair": (238, 232, 170)},
-    {"name": "Rosa",  "d1": (245, 140, 180), "d2": (255, 185, 210), "hair": (120, 72, 48)},
-    {"name": "Luna",  "d1": (170, 130, 235), "d2": (205, 175, 250), "hair": (45, 45, 70)},
-    {"name": "Mira",  "d1": (110, 205, 175), "d2": (160, 235, 210), "hair": (225, 140, 70)},
-]
-LIMITS = [0, 10, 15, 20, 30]
-
-def pick_font(size, bold=True):
-    for name in ("comicsansms", "segoeui", "arial"):
-        try:
-            f = pygame.font.SysFont(name, size, bold=bold)
-            if f:
-                return f
-        except Exception:
-            continue
-    return pygame.font.Font(None, size)
-
-font_big = pick_font(56); font_mid = pick_font(32); font_sm = pick_font(22)
-
-def make_tone(freq, ms, vol=0.3):
-    if not HAS_SOUND:
-        return None
-    import array
-    rate = 22050
-    n = int(rate * ms / 1000)
-    buf = array.array("h")
-    amp = int(32767 * vol)
-    for i in range(n):
-        env = 1 - i / n
-        s = int(amp * env * math.sin(2 * math.pi * freq * i / rate))
-        buf.append(s); buf.append(s)
-    try:
-        return pygame.mixer.Sound(buffer=buf.tobytes())
-    except Exception:
-        return None
-
-snd_jump = make_tone(520, 160, 0.25)
-snd_star = make_tone(880, 180, 0.30)
-snd_gold = make_tone(1200, 300, 0.35)
-snd_oops = make_tone(200, 300, 0.30)
-snd_win = make_tone(1000, 450, 0.35)
-snd_click = make_tone(660, 90, 0.25)
-
-def play(s):
-    if s and not cfg["muted"]:
-        try:
-            s.play()
-        except Exception:
-            pass
-
-def draw_sky():
-    for y in range(0, H, 2):
-        t = y / H
-        c = [int(SKY_TOP[i] + (SKY_BOT[i] - SKY_TOP[i]) * t) for i in range(3)]
-        pygame.draw.rect(screen, c, (0, y, W, 2))
-
-hills = [(random.randint(0, W), random.randint(60, 120)) for _ in range(4)]
-clouds = [[random.randint(0, W), random.randint(40, 180), random.uniform(0.4, 0.9)] for _ in range(5)]
-flakes = [[random.randint(0, W), random.randint(0, H), random.uniform(1, 3)] for _ in range(70)]
-
-def draw_cloud(x, y, s):
-    for dx, dy, r in [(0, 0, 22), (24, 4, 26), (48, 0, 20), (20, -12, 20)]:
-        pygame.draw.circle(screen, WHITE, (int(x + dx * s), int(y + dy * s)), int(r * s))
-
-def draw_background(scroll):
-    draw_sky()
-    for hx, hh in hills:
-        x = (hx - scroll * 0.2) % (W + 400) - 200
-        pygame.draw.ellipse(screen, (200, 230, 255), (x - 150, GROUND + 20 - hh, 300, hh * 2))
-    for c in clouds:
-        c[0] -= 0.3
-        if c[0] < -140:
-            c[0] = W + 90
-            c[1] = random.randint(40, 180)
-        draw_cloud(c[0], c[1], c[2])
-    pygame.draw.rect(screen, SNOW, (0, GROUND, W, H - GROUND))
-    pygame.draw.rect(screen, ICE, (0, GROUND, W, 8))
-    for f in flakes:
-        f[1] += f[2]; f[0] -= 0.4
-        if f[1] > H:
-            f[1] = 0
-            f[0] = random.randint(0, W)
-        pygame.draw.circle(screen, WHITE, (int(f[0]), int(f[1])), int(f[2]))
-
-def draw_princess(x, y, skin_idx, leg=0.0, scale=1.0):
-    p = PRINCESS[skin_idx]
-    d1, d2, hair = p["d1"], p["d2"], p["hair"]
-    def P(dx, dy):
-        return (x + dx * scale, y + dy * scale)
-    pygame.draw.polygon(screen, d1, [P(-22, 0), P(22, 0), P(12, -40), P(-12, -40)])
-    pygame.draw.polygon(screen, d2, [P(-10, -2), P(10, -2), P(6, -38), P(-6, -38)])
-    pygame.draw.line(screen, SKIN, P(-6, 0), P(-6 - leg, 0), max(3, int(6 * scale)))
-    pygame.draw.rect(screen, d1, (x - 10 * scale, y - 58 * scale, 20 * scale, 20 * scale), border_radius=6)
-    pygame.draw.line(screen, SKIN, P(-8, -52), P(-16, -40 + leg), max(3, int(5 * scale)))
-    pygame.draw.line(screen, SKIN, P(8, -52), P(16, -40 - leg), max(3, int(5 * scale)))
-    pygame.draw.circle(screen, SKIN, (int(x), int(y - 66 * scale)), int(13 * scale))
-    pygame.draw.line(screen, hair, P(8, -70), P(22, -40), max(4, int(7 * scale)))
-    pygame.draw.circle(screen, hair, (int(x), int(y - 74 * scale)), int(9 * scale))
-    pygame.draw.polygon(screen, GOLD, [P(-9, -77), P(-4, -85), P(0, -78), P(4, -85), P(9, -77)])
-    pygame.draw.circle(screen, TEXTCOL, (int(x - 4 * scale), int(y - 66 * scale)), max(1, int(2 * scale)))
-    pygame.draw.circle(screen, TEXTCOL, (int(x + 4 * scale), int(y - 66 * scale)), max(1, int(2 * scale)))
-
-class Player:
-    def __init__(self):
-        self.x = 140; self.y = GROUND; self.vy = 0; self.on_ground = True; self.run = 0
-
-    def jump(self):
-        if self.on_ground:
-            self.vy = -15.5
-            self.on_ground = False
-            play(snd_jump)
-
-    def update(self):
-        self.vy += 0.75
-        self.y += self.vy
-        if self.y >= GROUND:
-            self.y = GROUND; self.vy = 0; self.on_ground = True
-        self.run = (self.run + 0.25) % 4
-
-    def rect(self):
-        return pygame.Rect(self.x - 18, self.y - 70, 38, 70)
-
-    def draw(self):
-        leg = math.sin(self.run * math.pi) * (6 if self.on_ground else 0)
-        draw_princess(self.x, self.y, cfg["dress"], leg)
-
-class Star:
-    def __init__(self, x, gold=False):
-        self.x = x; self.gold = gold
-        self.y = GROUND - random.choice([40, 90, 140])
-        self.t = random.random() * 6
-
-    def update(self, sp):
-        self.x -= sp; self.t += 0.1
-
-    def draw(self):
-        yy = self.y + math.sin(self.t) * 4
-        c = GOLD if self.gold else (255, 255, 180)
-        pts = []
-        for i in range(10):
-            r = (14 if self.gold else 11) if i % 2 == 0 else 5
-            a = math.pi / 2 + i * math.pi / 5
-            pts.append((self.x + math.cos(a) * r, yy - math.sin(a) * r))
-        pygame.draw.polygon(screen, c, pts)
-        pygame.draw.circle(screen, TEXTCOL, (int(self.x - 3), int(yy - 1)), 1)
-        pygame.draw.circle(screen, TEXTCOL, (int(self.x + 3), int(yy - 1)), 1)
-
-    def rect(self):
-        return pygame.Rect(self.x - 12, self.y - 12, 24, 24)
-
-class Obstacle:
-    def __init__(self, x):
-        self.x = x
-        self.kind = random.choice(["log", "block", "snowman"])
-        self.h = random.choice([34, 44])
-
-    def update(self, sp):
-        self.x -= sp
-
-    def draw(self):
-        x = self.x; b = GROUND
-        if self.kind == "log":
-            pygame.draw.rect(screen, (150, 110, 70), (x - 18, b - self.h, 36, self.h), border_radius=8)
-        elif self.kind == "block":
-            pygame.draw.rect(screen, DARKICE, (x - 16, b - self.h, 32, self.h), border_radius=6)
-            pygame.draw.rect(screen, ICE, (x - 16, b - self.h, 32, 10), border_radius=6)
-        else:
-            pygame.draw.circle(screen, WHITE, (int(x), b - 12), 12)
-            pygame.draw.circle(screen, WHITE, (int(x), b - 30), 9)
-            pygame.draw.circle(screen, TEXTCOL, (int(x - 3), b - 32), 1)
-            pygame.draw.circle(screen, TEXTCOL, (int(x + 3), b - 32), 1)
-
-    def rect(self):
-        return pygame.Rect(self.x - 15, GROUND - self.h, 30, self.h)
-
-particles = []
-
-def burst(x, y, c):
-    for _ in range(12):
-        particles.append([x, y, random.uniform(-3, 3), random.uniform(-4, 0), c, 20])
-
-def draw_particles():
-    for p in particles[:]:
-        p[0] += p[2]; p[1] += p[3]; p[3] += 0.2; p[5] -= 1
-        pygame.draw.circle(screen, p[4], (int(p[0]), int(p[1])), 3)
-        if p[5] <= 0:
-            particles.remove(p)
-
-MENU, PICK, PLAY, PAUSE, OVER, PARENT, TIMEUP = range(7)
-
-def new_game():
-    return {"player": Player(), "stars": [], "obs": [], "score": 0, "hearts": 3,
-            "speed": 5.0, "scroll": 0.0, "spawn": 0, "praise": "", "praise_t": 0, "milestone": 0}
-
-praises = ["Great jump!", "Amazing!", "Wow!", "Super!", "You did it!", "Yay!"]
 
 def draw_hearts(n):
-    for i in range(3):
-        x = W - 40 - i * 34; y = 30
+    for i in range(5):
+        if i >= max(3, n):
+            break
+        x = W - 40 - i * 32
+        y = 30
         c = (255, 90, 120) if i < n else (205, 205, 215)
         pygame.draw.circle(screen, c, (x - 5, y), 7)
         pygame.draw.circle(screen, c, (x + 5, y), 7)
         pygame.draw.polygon(screen, c, [(x - 11, y + 2), (x + 11, y + 2), (x, y + 14)])
 
-def text_center(txt, fnt, y, col=TEXTCOL):
-    s = fnt.render(txt, True, col)
-    screen.blit(s, (W // 2 - s.get_width() // 2, y))
 
-def overlay(a=140):
-    ov = pygame.Surface((W, H), pygame.SRCALPHA)
-    ov.fill((255, 255, 255, a))
-    screen.blit(ov, (0, 0))
+def draw_hud(g):
+    screen.blit(font_mid.render("Score: %d" % g["score"], True, TEXTCOL), (20, 16))
+    draw_hearts(g["hearts"])
+    if g["mult"] > 1:
+        screen.blit(font_sm.render("x%d combo!" % g["mult"], True, (235, 130, 60)), (22, 54))
+    st = STAGES[g["stage"]]
+    frac = clamp(g["dist"] / st["dist"], 0.0, 1.0)
+    bx, bw = 200, W - 400
+    pygame.draw.rect(screen, WHITE, (bx, H - 26, bw, 14), border_radius=7)
+    pygame.draw.rect(screen, (120, 200, 140), (bx, H - 26, int(bw * frac), 14), border_radius=7)
+    pygame.draw.rect(screen, (150, 175, 205), (bx, H - 26, bw, 14), 2, border_radius=7)
+    screen.blit(font_sm.render("%d/5  %s" % (g["stage"] + 1, st["name"]), True, TEXTCOL), (bx - 175, H - 30))
+    fx = bx + bw + 12
+    pygame.draw.rect(screen, (170, 130, 90), (fx, H - 34, 8, 28))
+    pygame.draw.polygon(screen, (240, 190, 90), [(fx + 8, H - 34), (fx + 30, H - 27), (fx + 8, H - 20)])
+    ix = 20
+    if g["shield"]:
+        pygame.draw.polygon(screen, (140, 215, 255),
+                            [(ix, 84), (ix + 20, 84), (ix + 17, 100), (ix + 10, 106), (ix + 3, 100)])
+        ix += 30
+    if g["slow_t"] > 0:
+        for i in range(6):
+            a = i * math.pi / 3
+            pygame.draw.line(screen, (200, 235, 255), (ix + 10, 94),
+                             (ix + 10 + math.cos(a) * 10, 94 + math.sin(a) * 10), 3)
+        ix += 30
+    if g["magnet_t"] > 0:
+        pygame.draw.arc(screen, (235, 100, 110), (ix, 84, 22, 22), 0.6, 2.6, 5)
+
 
 def draw_mute_icon():
-    x, y = 24, H - 34
+    x, y = 24, H - 62
     c = (150, 170, 200) if cfg["muted"] else (70, 130, 200)
-    pygame.draw.polygon(screen, c, [(x, y - 6), (x + 7, y - 6), (x + 14, y - 14), (x + 14, y + 10), (x + 7, y + 2), (x, y + 2)])
+    pygame.draw.polygon(screen, c, [(x, y - 6), (x + 7, y - 6), (x + 14, y - 14),
+                                    (x + 14, y + 10), (x + 7, y + 2), (x, y + 2)])
     if cfg["muted"]:
         pygame.draw.line(screen, (220, 80, 90), (x + 18, y - 10), (x + 32, y + 6), 3)
         pygame.draw.line(screen, (220, 80, 90), (x + 32, y - 10), (x + 18, y + 6), 3)
@@ -284,8 +89,9 @@ def draw_mute_icon():
         pygame.draw.arc(screen, c, (x + 14, y - 12, 18, 20), -1.0, 1.0, 3)
     screen.blit(font_sm.render("M", True, c), (x + 40, y - 12))
 
+
 state = MENU
-g = new_game()
+g = new_run(0)
 hold_t = 0.0
 play_seconds = 0.0
 running = True
@@ -319,25 +125,42 @@ while running:
                 pygame.display.toggle_fullscreen()
             elif state == PARENT:
                 if e.key == pygame.K_LEFT:
-                    cfg["limit_min"] = LIMITS[(LIMITS.index(cfg["limit_min"]) - 1) % len(LIMITS)] if cfg["limit_min"] in LIMITS else 0
-                    save_cfg(); play(snd_click)
+                    i = LIMITS.index(cfg["limit_min"]) if cfg["limit_min"] in LIMITS else 0
+                    cfg["limit_min"] = LIMITS[(i - 1) % len(LIMITS)]
+                    save_cfg()
+                    play(snd_click)
                 elif e.key == pygame.K_RIGHT:
-                    cfg["limit_min"] = LIMITS[(LIMITS.index(cfg["limit_min"]) + 1) % len(LIMITS)] if cfg["limit_min"] in LIMITS else 10
-                    save_cfg(); play(snd_click)
+                    i = LIMITS.index(cfg["limit_min"]) if cfg["limit_min"] in LIMITS else 0
+                    cfg["limit_min"] = LIMITS[(i + 1) % len(LIMITS)]
+                    save_cfg()
+                    play(snd_click)
+                elif e.key == pygame.K_d:
+                    cfg["easy"] = not cfg["easy"]
+                    save_cfg()
+                    play(snd_click)
                 elif e.key == pygame.K_r:
-                    play_seconds = 0.0; play(snd_click)
+                    play_seconds = 0.0
+                    play(snd_click)
                 elif e.key in (pygame.K_ESCAPE, pygame.K_RETURN):
-                    state = MENU; play(snd_click)
+                    state = MENU
+                    play(snd_click)
             elif state == MENU:
                 if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                    state = PICK; play(snd_click)
+                    state = PICK
+                    play(snd_click)
             elif state == PICK:
                 if e.key == pygame.K_LEFT:
-                    cfg["dress"] = (cfg["dress"] - 1) % len(PRINCESS); save_cfg(); play(snd_click)
+                    cfg["dress"] = (cfg["dress"] - 1) % len(PRINCESS)
+                    save_cfg()
+                    play(snd_click)
                 elif e.key == pygame.K_RIGHT:
-                    cfg["dress"] = (cfg["dress"] + 1) % len(PRINCESS); save_cfg(); play(snd_click)
+                    cfg["dress"] = (cfg["dress"] + 1) % len(PRINCESS)
+                    save_cfg()
+                    play(snd_click)
                 elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                    g = new_game(); state = PLAY; play(snd_click)
+                    g = new_run(0)
+                    state = PLAY
+                    play(snd_click)
                 elif e.key == pygame.K_ESCAPE:
                     state = MENU
             elif state == PLAY:
@@ -348,18 +171,39 @@ while running:
             elif state == PAUSE:
                 if e.key == pygame.K_ESCAPE:
                     state = PLAY
-            elif state == OVER:
+            elif state == LEVELDONE:
                 if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                    g = new_game(); state = PLAY
+                    nxt = g["stage"] + 1
+                    if nxt >= len(STAGES):
+                        state = WINGAME
+                    else:
+                        cfg["unlocked"] = max(cfg["unlocked"], nxt + 1)
+                        save_cfg()
+                        g = new_run(nxt, g["score"], min(5, g["hearts"] + 1), g["crowns"])
+                        state = PLAY
+            elif state in (OVER, WINGAME):
+                if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    g = new_run(0)
+                    state = PLAY
                 elif e.key == pygame.K_ESCAPE:
                     state = PICK
         elif e.type == pygame.MOUSEBUTTONDOWN:
             if state == PLAY:
                 g["player"].jump()
             elif state == PICK:
-                g = new_game(); state = PLAY; play(snd_click)
-            elif state in (MENU, OVER):
-                state = PICK; play(snd_click)
+                g = new_run(0)
+                state = PLAY
+                play(snd_click)
+            elif state == LEVELDONE:
+                nxt = g["stage"] + 1
+                if nxt >= len(STAGES):
+                    state = WINGAME
+                else:
+                    g = new_run(nxt, g["score"], min(5, g["hearts"] + 1), g["crowns"])
+                    state = PLAY
+            elif state in (MENU, OVER, WINGAME):
+                state = PICK
+                play(snd_click)
 
     if state == PLAY:
         play_seconds += dt
@@ -367,131 +211,309 @@ while running:
             state = TIMEUP
             play(snd_win)
 
-        g["scroll"] += g["speed"]
-        g["speed"] = min(9.0, g["speed"] + 0.0008)
-        g["player"].update()
+        st = STAGES[g["stage"]]
+        sp = stage_speed(g["stage"])
+        slow = g["slow_t"] > 0
+        eff = sp * (0.5 if slow else 1.0)
+        g["scroll"] += eff
+        g["dist"] += eff
+        p = g["player"]
+
+        move = 0
+        if keys[pygame.K_LEFT]:
+            move -= 1
+        if keys[pygame.K_RIGHT]:
+            move += 1
+        p.update(move)
+
+        if g["slow_t"] > 0:
+            g["slow_t"] -= 1
+        if g["magnet_t"] > 0:
+            g["magnet_t"] -= 1
+        if g["combo_t"] > 0:
+            g["combo_t"] -= 1
+            if g["combo_t"] == 0:
+                g["combo"] = 0
+                g["mult"] = 1
+
+        if not g["checkpoint"] and g["dist"] >= st["dist"] * 0.5:
+            g["checkpoint"] = True
+            g["hearts"] = min(5, g["hearts"] + 1)
+            g["banner"] = "Checkpoint!  +1 heart"
+            g["banner_t"] = 90
+            sparkle_ring(p.x, p.y - 40, (150, 235, 170))
+            play(snd_power)
+
         g["spawn"] -= 1
         if g["spawn"] <= 0:
-            g["spawn"] = random.randint(55, 90)
-            if random.random() < 0.55:
-                g["obs"].append(Obstacle(W + 40))
-            gold = random.random() < 0.15
-            for k in range(random.randint(1, 3)):
-                g["stars"].append(Star(W + 140 + k * 34, gold and k == 0))
-        for o in g["obs"][:]:
-            o.update(g["speed"])
-            if o.x < -40:
-                g["obs"].remove(o)
-            elif o.rect().colliderect(g["player"].rect()):
-                g["obs"].remove(o)
-                g["hearts"] -= 1
-                play(snd_oops)
-                burst(g["player"].x, g["player"].y - 40, (255, 150, 150))
-                if g["hearts"] <= 0:
-                    state = OVER
-                    if g["score"] > cfg["best"]:
-                        cfg["best"] = g["score"]
-                        save_cfg()
-        for s in g["stars"][:]:
-            s.update(g["speed"])
-            if s.x < -30:
-                g["stars"].remove(s)
-            elif s.rect().colliderect(g["player"].rect()):
-                g["stars"].remove(s)
-                if s.gold:
-                    g["score"] += 50; play(snd_gold); burst(s.x, s.y, GOLD)
+            g["spawn"] = random.randint(42, 74)
+            ar = st["arrow"] * (0.55 if cfg["easy"] else 1.0)
+            if random.random() < ar * 12:
+                g["arrows"].append(Arrow(p.x, 6.2 + g["stage"] * 0.5))
+            mr = st["mon"] * (0.6 if cfg["easy"] else 1.0)
+            if random.random() < mr:
+                kinds = ["goblin", "slime"] if g["stage"] < 2 else ["goblin", "slime", "bat"]
+                g["mons"].append(Monster(W + 50, random.choice(kinds)))
+            roll = random.random()
+            if roll < 0.10:
+                g["picks"].append(Pickup(W + 60, "crown"))
+            elif roll < 0.16 and g["hearts"] < 5:
+                g["picks"].append(Pickup(W + 60, "heart"))
+            elif roll < 0.21:
+                g["picks"].append(Pickup(W + 60, "shield"))
+            elif roll < 0.25:
+                g["picks"].append(Pickup(W + 60, "snow"))
+            elif roll < 0.29:
+                g["picks"].append(Pickup(W + 60, "magnet"))
+            elif roll < 0.55:
+                for k in range(random.randint(2, 3)):
+                    g["picks"].append(Pickup(W + 60 + k * 40, "crystal"))
+            else:
+                for k in range(random.randint(2, 4)):
+                    g["picks"].append(Pickup(W + 60 + k * 38, "star"))
+
+        for a in g["arrows"][:]:
+            a.update(slow)
+            if a.dead():
+                g["arrows"].remove(a)
+                continue
+            if a.state == "fall" and p.inv <= 0 and hit(a.rect(), p.rect()):
+                a.state = "stuck"
+                a.stuck = 20
+                burst(a.x, a.y, (225, 235, 250), 14)
+                if g["shield"]:
+                    g["shield"] = False
+                    float_text(p.x, p.y - 92, "Shield saved you!", (90, 170, 220))
+                    play(snd_poof)
                 else:
-                    g["score"] += 10; play(snd_star); burst(s.x, s.y, (255, 255, 180))
-                g["praise"] = random.choice(praises)
-                g["praise_t"] = 45
+                    g["hearts"] -= 1
+                    p.inv = 70
+                    play(snd_oops)
+                    if g["hearts"] <= 0:
+                        state = OVER
+
+        for m in g["mons"][:]:
+            m.update(eff, slow)
+            if m.x < -70:
+                g["mons"].remove(m)
+                continue
+            pr = p.rect()
+            if p.vy > 0 and hit(m.stomp_rect(), pr):
+                g["mons"].remove(m)
+                p.vy = -11.5
+                gain = 25 * g["mult"]
+                g["score"] += gain
+                burst(m.x, m.y_now() - 12, (225, 245, 255), 16)
+                float_text(m.x, m.y_now() - 46, "+%d" % gain, (90, 160, 210))
+                play(snd_poof)
+                continue
+            if p.inv <= 0 and hit(m.rect(), pr):
+                if g["shield"]:
+                    g["shield"] = False
+                    g["mons"].remove(m)
+                    burst(m.x, m.y_now() - 12, (225, 245, 255), 16)
+                    float_text(p.x, p.y - 92, "Shield saved you!", (90, 170, 220))
+                    play(snd_poof)
+                else:
+                    g["mons"].remove(m)
+                    g["hearts"] -= 1
+                    p.inv = 70
+                    burst(p.x, p.y - 40, (255, 155, 155), 14)
+                    play(snd_oops)
+                    if g["hearts"] <= 0:
+                        state = OVER
+
+        for pk in g["picks"][:]:
+            pk.update(eff, slow, p, g["magnet_t"] > 0)
+            if pk.x < -50:
+                g["picks"].remove(pk)
+                continue
+            if hit(pk.rect(), p.rect()):
+                g["picks"].remove(pk)
+                k = pk.kind
+                if k == "star":
+                    gain = 10 * g["mult"]
+                    g["score"] += gain
+                    burst(pk.x, pk.y, (255, 255, 190), 10)
+                    float_text(pk.x, pk.y - 18, "+%d" % gain, (215, 165, 40))
+                    play(snd_star)
+                elif k == "crystal":
+                    g["combo"] += 1
+                    g["combo_t"] = 170
+                    g["mult"] = 1 + min(2, g["combo"] // 3)
+                    gain = 20 * g["mult"]
+                    g["score"] += gain
+                    burst(pk.x, pk.y, (150, 230, 255), 12)
+                    float_text(pk.x, pk.y - 18, "+%d" % gain, (60, 170, 215))
+                    play(snd_gem)
+                elif k == "crown":
+                    g["crowns"] += 1
+                    gain = 100 * g["mult"]
+                    g["score"] += gain
+                    sparkle_ring(pk.x, pk.y, GOLD)
+                    float_text(pk.x, pk.y - 20, "Crown! +%d" % gain, (215, 150, 40))
+                    play(snd_crown)
+                elif k == "heart":
+                    g["hearts"] = min(5, g["hearts"] + 1)
+                    sparkle_ring(pk.x, pk.y, (255, 130, 160))
+                    float_text(pk.x, pk.y - 20, "Extra heart!", (230, 90, 130))
+                    play(snd_power)
+                elif k == "shield":
+                    g["shield"] = True
+                    sparkle_ring(pk.x, pk.y, (150, 225, 255))
+                    float_text(pk.x, pk.y - 20, "Sparkle shield!", (70, 165, 220))
+                    play(snd_power)
+                elif k == "snow":
+                    g["slow_t"] = 360
+                    sparkle_ring(pk.x, pk.y, (215, 245, 255))
+                    float_text(pk.x, pk.y - 20, "Slow snow!", (90, 175, 225))
+                    play(snd_power)
+                else:
+                    g["magnet_t"] = 360
+                    sparkle_ring(pk.x, pk.y, (240, 130, 140))
+                    float_text(pk.x, pk.y - 20, "Star magnet!", (225, 95, 110))
+                    play(snd_power)
+                if random.random() < 0.30:
+                    g["praise"] = random.choice(praises)
+                    g["praise_t"] = 46
+
         if g["praise_t"] > 0:
             g["praise_t"] -= 1
-        if g["score"] >= g["milestone"] + 500:
-            g["milestone"] += 500
+        if g["banner_t"] > 0:
+            g["banner_t"] -= 1
+
+        if g["dist"] >= st["dist"]:
+            g["score"] += 200
+            g["cheer"] = 0
+            state = LEVELDONE
             play(snd_win)
-            burst(W // 2, 120, GOLD)
+            if g["score"] > cfg["best"]:
+                cfg["best"] = g["score"]
+            save_cfg()
 
-    draw_background(g["scroll"])
-    for s in g["stars"]:
-        s.draw()
-    for o in g["obs"]:
-        o.draw()
-    if state in (PLAY, PAUSE, OVER, TIMEUP):
-        g["player"].draw()
-    draw_particles()
+        if state == OVER and g["score"] > cfg["best"]:
+            cfg["best"] = g["score"]
+            save_cfg()
 
-    if state in (PLAY, PAUSE, OVER):
-        screen.blit(font_mid.render("Score: %d" % g["score"], True, TEXTCOL), (20, 18))
-        draw_hearts(g["hearts"])
-    if g["praise_t"] > 0 and state == PLAY:
-        text_center(g["praise"], font_mid, H // 2 - 150, PINK)
+    draw_background(g["scroll"], g["stage"])
+
+    if state in (PLAY, PAUSE, OVER, LEVELDONE, WINGAME, TIMEUP):
+        for pk in g["picks"]:
+            pk.draw()
+        for m in g["mons"]:
+            m.draw()
+        for a in g["arrows"]:
+            a.draw()
+        if state in (LEVELDONE, WINGAME):
+            g["cheer"] += 1
+            draw_princess(g["player"].x, g["player"].y, cfg["dress"], 0, 1.0, 0.0, False, True, False)
+        else:
+            g["player"].draw(g["shield"])
+        draw_particles()
+        if state in (PLAY, PAUSE):
+            draw_hud(g)
+        if g["praise_t"] > 0 and state == PLAY:
+            text_center(g["praise"], font_mid, 120, PINK)
+        if g["banner_t"] > 0 and state == PLAY:
+            text_center(g["banner"], font_mid, 160, (70, 165, 110))
 
     if state == MENU:
         overlay(120)
-        text_center("Frost Runner", font_big, 90, (70, 120, 200))
-        text_center("Princess Adventure", font_mid, 165, (140, 90, 180))
-        text_center("Press ENTER or CLICK to Play", font_mid, 265)
-        text_center("Best score: %d" % cfg["best"], font_sm, 320, (120, 150, 190))
-        text_center("Parents: hold P for 3 seconds for settings", font_sm, 400, (140, 160, 190))
+        text_center("Frost Runner", font_big, 74, (70, 120, 200))
+        text_center("Adventure", font_mid, 138, (140, 90, 180))
+        text_center("Press ENTER or CLICK to Play", font_mid, 236)
+        text_center("Best score: %d" % cfg["best"], font_sm, 286, (120, 150, 190))
+        text_center("Move: LEFT / RIGHT     Jump: SPACE", font_sm, 322, (110, 145, 185))
+        text_center("Mode: %s   (change in Parent Settings)" % ("Easy" if cfg["easy"] else "Adventure"),
+                    font_sm, 356, (140, 160, 190))
+        text_center("Parents: hold P for 3 seconds for settings", font_sm, 424, (140, 160, 190))
         if hold_t > 0:
-            pygame.draw.rect(screen, (200, 215, 235), (W // 2 - 100, 430, 200, 10), border_radius=5)
-            pygame.draw.rect(screen, (70, 130, 200), (W // 2 - 100, 430, int(200 * hold_t / 3.0), 10), border_radius=5)
+            pygame.draw.rect(screen, (200, 215, 235), (W // 2 - 100, 456, 200, 10), border_radius=5)
+            pygame.draw.rect(screen, (70, 130, 200), (W // 2 - 100, 456, int(200 * hold_t / 3.0), 10),
+                             border_radius=5)
         draw_mute_icon()
 
     elif state == PICK:
         overlay(140)
-        text_center("Choose your princess", font_mid, 45, (140, 90, 180))
-        for i, p in enumerate(PRINCESS):
-            cx = 140 + i * 210
+        text_center("Choose your princess", font_mid, 40, (140, 90, 180))
+        for i, pp in enumerate(PRINCESS):
+            cx = 150 + i * 220
             sel = (i == cfg["dress"])
             if sel:
-                pygame.draw.rect(screen, (255, 245, 200), (cx - 85, 95, 170, 260), border_radius=18)
-                pygame.draw.rect(screen, GOLD, (cx - 85, 95, 170, 260), 4, border_radius=18)
+                pygame.draw.rect(screen, (255, 245, 200), (cx - 88, 96, 176, 268), border_radius=18)
+                pygame.draw.rect(screen, GOLD, (cx - 88, 96, 176, 268), 4, border_radius=18)
             else:
-                pygame.draw.rect(screen, (255, 255, 255, 200), (cx - 80, 100, 160, 250), border_radius=16)
-            draw_princess(cx, 300, i, 0, 1.15)
-            nm = font_mid.render(p["name"], True, TEXTCOL if sel else (140, 160, 190))
-            screen.blit(nm, (cx - nm.get_width() // 2, 310))
-        text_center("LEFT / RIGHT to choose    ENTER to play", font_sm, 400)
-        text_center("ESC to go back", font_sm, 432, (140, 160, 190))
+                pygame.draw.rect(screen, (250, 252, 255), (cx - 82, 102, 164, 256), border_radius=16)
+            draw_princess(cx, 312, i, 0, 1.15)
+            nm = font_mid.render(pp["name"], True, TEXTCOL if sel else (150, 168, 195))
+            screen.blit(nm, (cx - nm.get_width() // 2, 322))
+        text_center("LEFT / RIGHT to choose      ENTER to play", font_sm, 404)
+        text_center("5 stages, monsters, crowns and power-ups await!", font_sm, 438, (140, 160, 190))
         draw_mute_icon()
 
     elif state == PAUSE:
         overlay(150)
-        text_center("Paused", font_big, 140)
-        text_center("Press ESC to keep playing", font_sm, 240)
+        text_center("Paused", font_big, 150)
+        text_center("Press ESC to keep playing", font_sm, 250)
         draw_mute_icon()
 
     elif state == OVER:
-        overlay(150)
-        text_center("Great Playing!", font_big, 100, PINK)
-        text_center("You scored %d" % g["score"], font_mid, 190)
-        text_center("Best ever: %d" % cfg["best"], font_sm, 240, (120, 150, 190))
-        text_center("Press ENTER to play again", font_sm, 300)
-        text_center("ESC to change princess", font_sm, 335, (140, 160, 190))
+        overlay(155)
+        text_center("Great Playing!", font_big, 96, PINK)
+        text_center("You scored %d" % g["score"], font_mid, 180)
+        text_center("Crowns collected: %d" % g["crowns"], font_sm, 226, (200, 150, 40))
+        text_center("Best ever: %d" % cfg["best"], font_sm, 258, (120, 150, 190))
+        text_center("Press ENTER to try again", font_sm, 318)
+        text_center("ESC to change princess", font_sm, 350, (140, 160, 190))
         draw_mute_icon()
 
+    elif state == LEVELDONE:
+        overlay(165)
+        draw_chest(W // 2, 250, g["cheer"])
+        text_center("Stage Complete!", font_big, 72, (70, 165, 120))
+        text_center(STAGES[g["stage"]]["name"] + "  cleared", font_mid, 140, (140, 90, 180))
+        text_center("Score: %d      Crowns: %d" % (g["score"], g["crowns"]), font_sm, 306)
+        if g["stage"] + 1 < len(STAGES):
+            text_center("Next: " + STAGES[g["stage"] + 1]["name"], font_mid, 348, (60, 130, 200))
+        text_center("Press ENTER to continue", font_sm, 402)
+        if g["cheer"] % 22 == 0:
+            burst(random.randint(200, W - 200), 150, random.choice([GOLD, PINK, (150, 225, 255)]), 14, 4.0)
+
+    elif state == WINGAME:
+        overlay(180)
+        g["cheer"] += 1
+        draw_chest(W // 2, 268, 60)
+        text_center("You saved the Ice Castle!", font_big, 66, (215, 150, 40))
+        text_center("Final score: %d" % g["score"], font_mid, 138)
+        text_center("Crowns: %d" % g["crowns"], font_mid, 180, (200, 150, 40))
+        text_center("Press ENTER to play again", font_sm, 400)
+        if g["cheer"] % 14 == 0:
+            burst(random.randint(120, W - 120), random.randint(90, 240),
+                  random.choice([GOLD, PINK, (150, 225, 255), (150, 235, 170)]), 16, 4.4)
+
     elif state == PARENT:
-        overlay(200)
-        text_center("Parent Settings", font_big, 60, (70, 120, 200))
+        overlay(205)
+        text_center("Parent Settings", font_big, 48, (70, 120, 200))
         lim = "No limit" if cfg["limit_min"] == 0 else "%d minutes" % cfg["limit_min"]
-        text_center("Play time limit:  < %s >" % lim, font_mid, 165)
-        text_center("LEFT / RIGHT to change", font_sm, 210, (140, 160, 190))
-        text_center("Sound:  %s   (press M)" % ("MUTED" if cfg["muted"] else "ON"), font_mid, 265)
-        used = int(play_seconds // 60)
-        text_center("Played this session: %d min   (press R to reset)" % used, font_sm, 320, (140, 160, 190))
-        text_center("Press ESC to go back", font_sm, 400)
-        text_center("Settings are saved automatically", font_sm, 435, (170, 185, 205))
+        text_center("Play time limit:   < %s >" % lim, font_mid, 140)
+        text_center("LEFT / RIGHT to change", font_sm, 182, (140, 160, 190))
+        text_center("Difficulty:  %s   (press D)" % ("Easy" if cfg["easy"] else "Adventure"), font_mid, 226)
+        text_center("Sound:  %s   (press M)" % ("MUTED" if cfg["muted"] else "ON"), font_mid, 274)
+        text_center("Played this session: %d min   (press R to reset)" % int(play_seconds // 60),
+                    font_sm, 320, (140, 160, 190))
+        text_center("Press ESC to go back", font_sm, 396)
+        text_center("Settings are saved automatically", font_sm, 428, (170, 185, 205))
 
     elif state == TIMEUP:
-        overlay(200)
-        text_center("Time for a break!", font_big, 110, PINK)
-        text_center("Great playing today.", font_mid, 200)
-        text_center("Ask a grown-up if you want more time.", font_sm, 255, (120, 150, 190))
-        text_center("Parents: hold P for 3 seconds to allow more", font_sm, 340, (140, 160, 190))
+        overlay(205)
+        text_center("Time for a break!", font_big, 100, PINK)
+        text_center("Great playing today.", font_mid, 188)
+        text_center("Ask a grown-up if you want more time.", font_sm, 240, (120, 150, 190))
+        text_center("Parents: hold P for 3 seconds to allow more", font_sm, 330, (140, 160, 190))
         if hold_t > 0:
-            pygame.draw.rect(screen, (200, 215, 235), (W // 2 - 100, 380, 200, 10), border_radius=5)
-            pygame.draw.rect(screen, (70, 130, 200), (W // 2 - 100, 380, int(200 * hold_t / 3.0), 10), border_radius=5)
+            pygame.draw.rect(screen, (200, 215, 235), (W // 2 - 100, 368, 200, 10), border_radius=5)
+            pygame.draw.rect(screen, (70, 130, 200), (W // 2 - 100, 368, int(200 * hold_t / 3.0), 10),
+                             border_radius=5)
 
     pygame.display.flip()
 
